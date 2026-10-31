@@ -299,7 +299,8 @@ print(f"Hello from {name}! 🐱")`;
                 // 如果需要，设置其他选项
                 locateFile: function(path) {
                     if (path.endsWith('.wasm')) {
-                        return 'kiz_wasm.wasm';
+                        // 带时间戳绕过浏览器缓存：wasm更新后刷新页面立即生效
+                        return 'kiz_wasm.wasm?v=' + Date.now();
                     }
                     return path;
                 }
@@ -351,7 +352,8 @@ print(f"Hello from {name}! 🐱")`;
                 const result = window.kizModule.ccall('run_code', 'string', ['string'], [code]);
                 
                 appendOutput('=== Execution Result ===\n', 'info');
-                appendOutput(result + '\n', result.includes('Error') ? 'error' : 'success');
+                const isError = result.includes('Error') || result.includes('Panic');
+                appendOutput(result + '\n', isError ? 'error' : 'success');
             }
             // 方法2: 使用 ccall
             else if (window.kizModule.ccall) {
