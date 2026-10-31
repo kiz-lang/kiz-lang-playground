@@ -6,6 +6,8 @@
     <title>Kiz Playground</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -60,28 +62,24 @@
             padding: 1rem;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
         }
-        #editor {
-            width: 100%;
-            min-height: 300px;
-            padding: 1rem;
+        .CodeMirror {
+            height: 320px;
+            font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+            font-size: 0.95rem;
+            line-height: 1.5;
             border: 1px solid #e5e7eb;
             border-radius: 0.5rem;
-            font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-            font-size: 1rem;
-            line-height: 1.5;
-            resize: vertical;
             background-color: #fafafa;
-            outline: none;
-            white-space: pre-wrap;
-            overflow-x: auto;
-            caret-color: #3b82f6; /* 优化光标可视性 */
-            caret-shape: bar; /* 统一光标形状 */
+            caret-color: #3b82f6;
         }
-        #editor:empty::before {
-            content: "Write your Kiz code here...";
-            color: #9ca3af;
-            pointer-events: none; /* 避免占位符干扰光标 */
-        }
+        /* kiz mode 配色：贴近主流编辑器 */
+        .cm-s-default .cm-kiz-keyword { color: #d73a49; }
+        .cm-s-default .cm-kiz-constant { color: #005cc5; }
+        .cm-s-default .cm-kiz-type { color: #6f42c1; }
+        .cm-s-default .cm-kiz-fn { color: #6f42c1; }
+        .cm-s-default .cm-comment { color: #6a737d; }
+        .cm-s-default .cm-string { color: #032f62; }
+        .cm-s-default .cm-number { color: #005cc5; }
         .output-container {
             background-color: white;
             border-radius: 0.75rem;
@@ -135,10 +133,6 @@
             color: #6b7280;
             font-style: italic;
         }
-        /* 隐藏高亮span的outline，避免干扰光标 */
-        #editor span {
-            outline: none;
-        }
     </style>
 </head>
 <body>
@@ -149,7 +143,7 @@
         </div>
 
         <div class="editor-container">
-            <div id="editor" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off"></div>
+            <textarea id="editor"></textarea>
         </div>
 
         <div class="output-container">
@@ -180,7 +174,6 @@
         });
 
         // 2. 全局元素获取
-        const editor = document.getElementById('editor');
         const output = document.getElementById('output');
         const runBtn = document.getElementById('runBtn');
         const clearBtn = document.getElementById('clearBtn');
@@ -202,157 +195,89 @@ print(c(), c(), c())
 name = "Kiz"
 print(f"Hello from {name}! 🐱")`;
 
-        // 4. 输出工具函数
+        // 4. 输出工具函数（剥离kiz错误输出携带的ANSI终端颜色码）
+        const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
         function appendOutput(text, type = 'info') {
             const line = document.createElement('span');
             line.className = type;
-            line.textContent = text;
+            line.textContent = String(text).replace(ANSI_RE, '');
             output.appendChild(line);
             output.scrollTop = output.scrollHeight;
         }
 
-        // 5. WASM输出回调
-        window.kizWasmOutput = function(text) {
-            appendOutput(text, 'success');
-        };
-        window.kizWasmOutputErr = function(text) {
-            appendOutput(text, 'error');
-        };
+        // ========== CodeMirror 编辑器（成熟库，中文IME友好） ==========
+        CodeMirror.defineMode('kiz', function() {
+            const keywords = /^(fn|end|if|else|while|for|in|break|next|return|try|catch|throw|import|global|nonlocal|at)\b/;
+            const logical = /^(and|or|not|is)\b/;
+            const constants = /^(True|False|Nil|__StopIterSignal__)\b/;
+            const types = /^(Object|Int|Bool|Str|List|Dict|Decimal|Range|Error|Func|NFunc|Module|FileHandle)\b/;
 
-        // ========== 核心修复：光标处理函数 ==========
-        // 获取编辑器纯文本（忽略DOM结构）
-        function getEditorPureText() {
-            return editor.textContent.replace(/\u200B/g, ''); // 移除零宽空格
-        }
-        // 精准获取光标偏移量（基于纯文本，兼容任意DOM结构）
-        function getCursorOffset() {
-            const selection = window.getSelection();
-            if (!selection.rangeCount || editor.isContentEditable === false) return 0;
-            const range = selection.getRangeAt(0);
-            const preRange = document.createRange();
-            preRange.selectNodeContents(editor);
-            preRange.setEnd(range.endContainer, range.endOffset);
-            // 过滤零宽空格，保证偏移量和纯文本一致
-            return preRange.toString().replace(/\u200B/g, '').length;
-        }
-        // 修复节点遍历：处理元素节点/空文本节点，兼容高亮后的span
-        function traverseNodesForOffset(node, targetOffset, currentOffset = 0) {
-            let result = { node: null, offset: 0 };
-            // 文本节点：计算偏移
-            if (node.nodeType === 3) {
-                const text = node.textContent.replace(/\u200B/g, '');
-                const len = text.length;
-                if (currentOffset + len >= targetOffset) {
-                    result.node = node;
-                    result.offset = targetOffset - currentOffset;
-                    return result;
+            return {
+                token: function(stream, state) {
+                    if (stream.eatSpace()) return null;
+                    // 块注释
+                    if (stream.match('/*')) {
+                        while (!stream.eol()) { if (stream.match('*/')) break; stream.next(); }
+                        return 'comment';
+                    }
+                    if (stream.match('#')) { stream.skipToEnd(); return 'comment'; }
+                    // f-string 与普通字符串
+                    if (stream.match('f"')) {
+                        let esc = false;
+                        while (!stream.eol()) {
+                            const ch = stream.next();
+                            if (esc) { esc = false; continue; }
+                            if (ch === '\\') { esc = true; continue; }
+                            if (ch === '"') break;
+                        }
+                        return 'string';
+                    }
+                    if (stream.match('"') || stream.match("'")) {
+                        const quote = stream.string.charAt(stream.start);
+                        let esc = false;
+                        while (!stream.eol()) {
+                            const ch = stream.next();
+                            if (esc) { esc = false; continue; }
+                            if (ch === '\\') { esc = true; continue; }
+                            if (ch === quote) break;
+                        }
+                        return 'string';
+                    }
+                    if (stream.match(/\b\d+(\.\d+)?([eE][+-]?\d+)?\b/)) return 'number';
+                    const m = stream.match(/^[a-zA-Z_\u4e00-\u9fa5][a-zA-Z0-9_\u4e00-\u9fa5]*/);
+                    if (m) {
+                        const word = m[0];
+                        if (word === 'this') return 'keyword';
+                        if (keywords.test(word)) return 'keyword';
+                        if (logical.test(word)) return 'keyword';
+                        if (constants.test(word)) return 'atom';
+                        if (types.test(word)) return 'type';
+                        // 函数定义名与调用
+                        if (stream.peek() === '(') return 'variable';
+                        return null;
+                    }
+                    if (stream.match('=>') || stream.match('->')) return 'operator';
+                    if (stream.match(/^(==|!=|>=|<=|\+|-|\*|\/|%|\^|=|<|>|\.\.\.|\.|,|:|;|[()\[\]{}])/)) return null;
+                    stream.next();
+                    return null;
                 }
-                currentOffset += len;
-            }
-            // 元素节点：递归遍历子节点（跳过注释/脚本节点）
-            else if (node.nodeType === 1 && node.tagName !== 'SCRIPT' && node.tagName !== 'COMMENT') {
-                for (let child of node.childNodes) {
-                    result = traverseNodesForOffset(child, targetOffset, currentOffset);
-                    if (result.node) return result;
-                    currentOffset = result.offset; // 更新累计偏移
-                }
-            }
-            return { node: result.node, offset: currentOffset };
+            };
+        });
+
+        const cmEditor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+            mode: 'kiz',
+            lineNumbers: true,
+            indentUnit: 4,
+            tabSize: 4,
+            indentWithTabs: false,
+            lineWrapping: false
+        });
+        cmEditor.setValue(INIT_KIZ_CODE);
+        cmEditor.setSize('100%', '320px');
+
+        function getEditorCode() {
+            return cmEditor.getValue();
         }
-        // 精准设置光标偏移量（核心修复）
-        function setCursorByOffset(offset) {
-            if (editor.isContentEditable === false || offset < 0) return;
-            const selection = window.getSelection();
-            const pureText = getEditorPureText();
-            const targetOffset = Math.min(offset, pureText.length); // 防止越界
-            const result = traverseNodesForOffset(editor, targetOffset);
-            if (result.node) {
-                const range = document.createRange();
-                range.setStart(result.node, result.offset);
-                range.collapse(true);
-                selection.removeAllRanges();
-                selection.addRange(range);
-                editor.focus(); // 确保编辑器聚焦
-            }
-            // 空编辑器时，光标定位到起始位置
-            else if (pureText.length === 0) {
-                const range = document.createRange();
-                range.selectNodeContents(editor);
-                range.collapse(true);
-                selection.removeAllRanges();
-                selection.addRange(range);
-                editor.focus();
-            }
-        }
-
-        // ========== 修复高亮逻辑：避免定时器叠加+顺滑更新 ==========
-        let highlightPending = false;
-        function highlightEditor() {
-            if (highlightPending || !editor.textContent) return;
-            highlightPending = true;
-            // 用requestAnimationFrame替代setTimeout，避免快速输入叠加，更顺滑
-            requestAnimationFrame(() => {
-                const cursorOffset = getCursorOffset(); // 记录光标
-                const code = getEditorPureText();
-                // 高亮后保留换行/空格，兼容contenteditable
-                const highlighted = hljs.highlight(code, { language: 'kiz' }).value;
-                editor.innerHTML = highlighted;
-                setCursorByOffset(cursorOffset); // 恢复光标
-                highlightPending = false;
-            });
-        }
-
-        // ========== 核心修复：Enter键换行+光标处理 ==========
-        editor.addEventListener('keydown', (e) => {
-            // 阻止默认换行（避免生成<div>/<br>，保持纯文本换行）
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                e.stopPropagation();
-                const cursorOffset = getCursorOffset();
-                // 插入纯文本换行（零宽空格防止DOM合并节点）
-                editor.textContent = getEditorPureText().slice(0, cursorOffset) + '\n' + getEditorPureText().slice(cursorOffset);
-                setCursorByOffset(cursorOffset + 1); // 光标移到换行后
-                highlightEditor(); // 同步高亮
-            }
-            // 阻止Tab默认行为，可自定义Tab为4个空格（可选）
-            else if (e.key === 'Tab') {
-                e.preventDefault();
-                const cursorOffset = getCursorOffset();
-                editor.textContent = getEditorPureText().slice(0, cursorOffset) + '    ' + getEditorPureText().slice(cursorOffset);
-                setCursorByOffset(cursorOffset + 4);
-                highlightEditor();
-            }
-        });
-
-        // ========== 编辑器事件优化 ==========
-        // 输入时触发高亮（防抖+无叠加）
-        editor.addEventListener('input', () => {
-            // 过滤空输入/仅空格的情况
-            if (getEditorPureText().trim() || editor.textContent) {
-                highlightEditor();
-            }
-        });
-        // 编辑器聚焦时，确保光标可见
-        editor.addEventListener('focus', () => {
-            if (!window.getSelection().rangeCount) {
-                setCursorByOffset(getEditorPureText().length);
-            }
-        });
-        // 粘贴时过滤富文本，仅保留纯文本（避免DOM混乱）
-        editor.addEventListener('paste', (e) => {
-            e.preventDefault();
-            const text = e.clipboardData.getData('text/plain');
-            const cursorOffset = getCursorOffset();
-            editor.textContent = getEditorPureText().slice(0, cursorOffset) + text + getEditorPureText().slice(cursorOffset);
-            setCursorByOffset(cursorOffset + text.length);
-            highlightEditor();
-        });
-
-        // 初始填充+高亮
-        editor.textContent = INIT_KIZ_CODE;
-        highlightEditor();
-        editor.focus();
-        setCursorByOffset(getEditorPureText().length); // 初始光标移到代码末尾
 
         // 9. 按钮事件
         clearBtn.addEventListener('click', () => {
@@ -366,10 +291,10 @@ print(f"Hello from {name}! 🐱")`;
             window.kizModule = await createKizModule({
                 // 配置打印输出
                 print: function(text) {
-                    appendOutput(text + '\n', 'success');
+                    appendOutput(text, 'success');
                 },
                 printErr: function(text) {
-                    appendOutput(text + '\n', 'error');
+                    appendOutput(text, 'error');
                 },
                 // 如果需要，设置其他选项
                 locateFile: function(path) {
@@ -413,7 +338,7 @@ print(f"Hello from {name}! 🐱")`;
         }
         
         output.innerHTML = '';
-        const code = getEditorPureText().trim();
+        const code = getEditorCode().trim();
         if (!code) {
             appendOutput('❌ Empty Kiz code!\n', 'error');
             return;
@@ -450,15 +375,8 @@ print(f"Hello from {name}! 🐱")`;
         }
     });
 
-    // 页面加载时初始化
+    // 页面加载时：CodeMirror已初始化代码，直接加载WASM
     window.addEventListener('DOMContentLoaded', () => {
-        // 初始填充+高亮
-        editor.textContent = INIT_KIZ_CODE;
-        highlightEditor();
-        editor.focus();
-        setCursorByOffset(getEditorPureText().length);
-        
-        // 加载WASM
         loadKizWasm();
     });
 </script>
