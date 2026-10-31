@@ -1,3 +1,3 @@
 # kiz-lang-playground
 try play kiz-lang online!
-**website**: [try.kiz.random321.com](http://try.kiz.random321.com)
+**website**: [try.kiz.i2pl.com](http://try.kiz.i2pl.com)
