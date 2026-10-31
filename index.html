@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kiz Playground</title>
+    <title>Kiz Playground (v0.10.0)</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <style>
@@ -187,8 +187,21 @@
 
         // 3. 全局状态
         let isLoaded = false;
-        const INIT_KIZ_CODE = `# Kiz Language Playground
-# Try some code below!
+        const INIT_KIZ_CODE = `# Kiz Language Playground (v0.10.0)
+# 闭包现在共享可变绑定 —— man-or-boy 通过!
+
+fn make_counter
+    n = 0
+    fn inc
+        n = n + 1
+        return n
+    end
+    return inc
+end
+
+c = make_counter()
+print(c(), c(), c())
+
 name = "Kiz"
 print(f"Hello from {name}! 🐱")`;
 
@@ -412,8 +425,8 @@ print(f"Hello from {name}! 🐱")`;
         try {
             // 方法1: 直接调用导出的 C 函数（如果存在）
             if (window.kizModule._run_code) {
-                const resultPtr = window.kizModule._run_code(code);
-                const result = window.kizModule.UTF8ToString(resultPtr);
+                // ccall负责JS字符串到wasm内存的转换（直接调_run_code传JS字符串会得到垃圾指针）
+                const result = window.kizModule.ccall('run_code', 'string', ['string'], [code]);
                 
                 appendOutput('=== Execution Result ===\n', 'info');
                 appendOutput(result + '\n', result.includes('Error') ? 'error' : 'success');
